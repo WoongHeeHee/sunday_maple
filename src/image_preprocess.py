@@ -15,6 +15,8 @@ MAX_IMAGE_SIDE = 1280
 MAX_CHUNK_HEIGHT = 1400
 # 429 재시도 시 더 작게 줄이는 한도
 FALLBACK_MAX_SIDE = 768
+# Discord 첨부용 세로 분할 높이 (원본 가로 해상도 유지)
+DISCORD_CHUNK_HEIGHT = 1100
 
 
 def _resize_by_longest_side(image: Image.Image, max_side: int) -> Image.Image:
@@ -82,3 +84,36 @@ def prepare_event_image(
         max_side,
     )
     return chunks, meta
+
+
+def _image_to_png_bytes(image: Image.Image) -> bytes:
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG", optimize=True)
+    return buffer.getvalue()
+
+
+def prepare_discord_attachments(
+    image_bytes: bytes,
+    *,
+    chunk_height: int = DISCORD_CHUNK_HEIGHT,
+) -> list[tuple[str, bytes]]:
+    """Discord 첨부용으로 원본 해상도 기준 세로 분할 PNG를 생성합니다."""
+    original = Image.open(io.BytesIO(image_bytes))
+    original_size = original.size
+    rgb = _to_rgb(original)
+    chunks = split_tall_image(rgb, chunk_height=chunk_height)
+
+    attachments: list[tuple[str, bytes]] = []
+    total = len(chunks)
+    for index, chunk in enumerate(chunks, start=1):
+        filename = f"sunday_maple_{index}_of_{total}.png"
+        attachments.append((filename, _image_to_png_bytes(chunk)))
+
+    logger.info(
+        "Discord 이미지 분할: %dx%d -> %d개 첨부 (chunk_height=%d)",
+        original_size[0],
+        original_size[1],
+        total,
+        chunk_height,
+    )
+    return attachments
