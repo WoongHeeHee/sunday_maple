@@ -28,6 +28,10 @@ logging.basicConfig(
 logger = logging.getLogger("sunday_maple_alarm")
 
 
+def _is_force_notify() -> bool:
+    return os.getenv("FORCE_NOTIFY", "").lower() in ("1", "true", "yes")
+
+
 def main() -> int:
     webhook_url = os.getenv("DISCORD_WEBHOOK_URL")
     if not webhook_url:
@@ -38,10 +42,14 @@ def main() -> int:
         logger.error("환경 변수 GEMINI_API_KEY가 설정되지 않았습니다.")
         return 1
 
+    force_notify = _is_force_notify()
+    if force_notify:
+        logger.info("FORCE_NOTIFY 활성화 — 중복 방지를 건너뜁니다 (테스트 모드).")
+
     week_key = current_week_key()
     state = load_state(DEFAULT_STATE_PATH)
 
-    if state and already_notified(state, week_key, state.event_id):
+    if not force_notify and state and already_notified(state, week_key, state.event_id):
         logger.info(
             "이번 주(%s) 알림이 이미 전송되었습니다 (event_id=%s). 조용히 종료합니다.",
             week_key,
@@ -64,7 +72,7 @@ def main() -> int:
         )
         return 0
 
-    if already_notified(state, week_key, event.event_id):
+    if not force_notify and already_notified(state, week_key, event.event_id):
         logger.info(
             "event_id=%s 알림이 이미 전송되었습니다. 조용히 종료합니다.",
             event.event_id,
