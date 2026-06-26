@@ -1,4 +1,4 @@
-"""Gemini API 전송 전 이벤트 이미지 전처리."""
+"""Vision API 전송 전 이벤트 이미지 전처리."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from PIL import Image
 
 logger = logging.getLogger(__name__)
 
-# 긴 변 기준 리사이즈 — 타일 수(토큰)를 예측 가능한 수준으로 제한
+# 긴 변 기준 리사이즈 — 토큰 사용량을 예측 가능한 수준으로 제한
 MAX_IMAGE_SIDE = 1280
 # 리사이즈 후에도 세로가 길면 구간 분할
 MAX_CHUNK_HEIGHT = 1400
@@ -51,7 +51,7 @@ def split_tall_image(image: Image.Image, chunk_height: int = MAX_CHUNK_HEIGHT) -
     return chunks
 
 
-def prepare_for_gemini(
+def prepare_event_image(
     image_bytes: bytes,
     *,
     max_side: int = MAX_IMAGE_SIDE,

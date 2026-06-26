@@ -8,7 +8,7 @@ import sys
 from datetime import datetime, timezone
 
 from src.discord_notifier import DiscordNotifierError, send_success_embed
-from src.gemini_analyzer import GeminiAnalyzerError, analyze_event_image
+from src.gpt_analyzer import VisionAnalyzerError, analyze_event_image
 from src.scraper import ScraperError, create_session, download_image, fetch_sunday_maple_event
 from src.state import (
     DEFAULT_STATE_PATH,
@@ -38,8 +38,8 @@ def main() -> int:
         logger.error("환경 변수 DISCORD_WEBHOOK_URL이 설정되지 않았습니다.")
         return 1
 
-    if not os.getenv("GEMINI_API_KEY"):
-        logger.error("환경 변수 GEMINI_API_KEY가 설정되지 않았습니다.")
+    if not os.getenv("OPENAI_API_KEY"):
+        logger.error("환경 변수 OPENAI_API_KEY가 설정되지 않았습니다.")
         return 1
 
     force_notify = _is_force_notify()
@@ -99,7 +99,7 @@ def main() -> int:
             detail_url=event.detail_url,
             image_url=event.image_url,
         )
-    except (ScraperError, DiscordNotifierError, GeminiAnalyzerError) as exc:
+    except (ScraperError, DiscordNotifierError, VisionAnalyzerError) as exc:
         logger.error("처리 중 오류: %s", exc)
         return 1
     except Exception as exc:
