@@ -11,7 +11,7 @@ from PIL import Image
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "gemini-2.0-flash"
+DEFAULT_MODEL = "gemini-1.5-flash"
 ANALYSIS_PROMPT = """당신은 메이플스토리 '썬데이 메이플' 이벤트 공지를 분석하는 도우미입니다.
 첨부된 이벤트 이미지를 읽고, 이번 주 혜택 내용을 한국어로 정리해 주세요.
 
