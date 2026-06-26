@@ -15,7 +15,7 @@ from src.image_preprocess import FALLBACK_MAX_SIDE, MAX_IMAGE_SIDE, prepare_even
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "gpt-5.5-instant"
+DEFAULT_MODEL = "gpt-5.5"
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 8.0
 DEFAULT_IMAGE_DETAIL = "low"
