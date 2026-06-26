@@ -164,7 +164,7 @@ def _generate_text(
             response = client.chat.completions.create(
                 model=model,
                 messages=[{"role": "user", "content": content}],
-                max_tokens=4096,
+                max_completion_tokens=4096,
             )
             text = (response.choices[0].message.content or "").strip()
             if not text:
