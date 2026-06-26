@@ -41,6 +41,7 @@ jobs:
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          JINA_API_KEY: ${{ secrets.JINA_API_KEY }}
           FORCE_NOTIFY: ${{ github.event.inputs.force_run || 'false' }}
         run: python main.py
 
