@@ -1,11 +1,6 @@
 name: Sunday Maple Alarm
 
 on:
-  schedule:
-    # 금요일 10:05 / 10:15 / 10:25 KST (= UTC 01:05 / 01:15 / 01:25)
-    - cron: '5 1 * * 5'
-    - cron: '15 1 * * 5'
-    - cron: '25 1 * * 5'
   workflow_dispatch:
     inputs:
       force_run:
@@ -13,11 +8,34 @@ on:
         required: false
         default: false
         type: boolean
+  schedule:
+    # 매주 금요일 10:05 / 10:15 / 10:25 KST (공지 지연 대비 3회)
+    - cron: "5 10 * * 5"
+      timezone: Asia/Seoul
+    - cron: "15 10 * * 5"
+      timezone: Asia/Seoul
+    - cron: "25 10 * * 5"
+      timezone: Asia/Seoul
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sunday-maple-notify
+  cancel-in-progress: false
 
 jobs:
   notify:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
+      - name: Log trigger
+        run: |
+          echo "event=${{ github.event_name }}"
+          echo "schedule=${{ github.event.schedule }}"
+          date -u +"%Y-%m-%d %H:%M:%S UTC"
+          TZ=Asia/Seoul date +"%Y-%m-%d %H:%M:%S KST"
+
       - name: Checkout repository
         uses: actions/checkout@v5
 
