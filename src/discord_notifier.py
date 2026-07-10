@@ -14,7 +14,14 @@ logger = logging.getLogger(__name__)
 EMBED_COLOR = 0xFF6B35
 WEBHOOK_TIMEOUT = 60
 MAX_RETRIES = 2
-MAX_ATTACHMENTS = 10
+
+_MIME_BY_EXTENSION = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+}
 
 
 class DiscordNotifierError(Exception):
@@ -52,11 +59,9 @@ def _post_webhook(webhook_url: str, payload: dict, files: list | None = None) ->
     raise DiscordNotifierError("Discord Webhook 전송 실패") from last_error
 
 
-def _build_multipart_files(attachments: list[tuple[str, bytes]]) -> list[tuple[str, tuple]]:
-    return [
-        (f"files[{index}]", (filename, data, "image/png"))
-        for index, (filename, data) in enumerate(attachments)
-    ]
+def _mime_type_for_filename(filename: str) -> str:
+    extension = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    return _MIME_BY_EXTENSION.get(extension, "image/png")
 
 
 def send_success_embed(
@@ -67,7 +72,7 @@ def send_success_embed(
     description: str,
     detail_url: str,
     image_url: str | None,
-    image_attachments: list[tuple[str, bytes]] | None = None,
+    image_attachment: tuple[str, bytes] | None = None,
 ) -> None:
     embed_title = f"🍁 {title}"
     if period:
@@ -82,25 +87,13 @@ def send_success_embed(
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
-    if image_attachments:
-        # embed.image에 넣지 않고 파일만 첨부하면 Discord가 갤러리 형태로 묶어 표시함
-        if image_url:
-            main_embed["description"] = (
-                f"{description[:4000]}"
-            )[:4096]
-
-        if len(image_attachments) > MAX_ATTACHMENTS:
-            logger.warning(
-                "Discord 첨부 제한으로 이미지 %d/%d개만 전송합니다.",
-                MAX_ATTACHMENTS,
-                len(image_attachments),
-            )
-            image_attachments = image_attachments[:MAX_ATTACHMENTS]
-
+    if image_attachment:
+        filename, data = image_attachment
+        mime = _mime_type_for_filename(filename)
         payload = {"embeds": [main_embed]}
-        files = _build_multipart_files(image_attachments)
+        files = [("files[0]", (filename, data, mime))]
         _post_webhook(webhook_url, payload, files=files)
-        logger.info("Discord 알림 전송 완료 (이미지 %d개 갤러리 첨부)", len(image_attachments))
+        logger.info("Discord 알림 전송 완료 (원본 이미지 첨부)")
         return
 
     if image_url:

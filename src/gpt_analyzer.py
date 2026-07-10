@@ -3,15 +3,11 @@
 from __future__ import annotations
 
 import base64
-import io
 import logging
 import os
 import time
 
 from openai import APIStatusError, OpenAI, RateLimitError
-from PIL import Image
-
-from src.image_preprocess import FALLBACK_MAX_SIDE, MAX_IMAGE_SIDE, prepare_event_image
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +15,6 @@ DEFAULT_MODEL = "gpt-5.5"
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 8.0
 DEFAULT_IMAGE_DETAIL = "low"
-FALLBACK_IMAGE_DETAIL = "low"
 
 ANALYSIS_PROMPT = """
 당신은 메이플스토리 '썬데이 메이플' 이벤트 이미지를 요약하는 도우미입니다.
@@ -93,21 +88,6 @@ ANALYSIS_PROMPT = """
 - 불필요한 부가 설명 금지
 """
 
-CHUNK_PROMPT = """당신은 메이플스토리 '썬데이 메이플' 공지 이미지의 일부 구간을 분석합니다.
-이 구간({chunk_index}/{chunk_total})에 보이는 혜택·조건·주의사항만 bullet list(•)로 추출하세요.
-보이지 않는 내용은 추측하지 마세요.
-
-이벤트 제목: {title}
-이벤트 기간: {period}
-"""
-
-MERGE_PROMPT = """아래는 같은 썬데이 메이플 공지 이미지를 구간별로 분석한 결과입니다.
-중복을 제거하고, Discord 메시지용 bullet list(•) 하나로 통합해 주세요.
-불필요한 서론 없이 혜택 내용만 간결하게 정리하세요.
-
-{combined}
-"""
-
 
 class VisionAnalyzerError(Exception):
     """Vision API 이미지 분석 실패."""
@@ -133,27 +113,38 @@ def _is_rate_limit_error(exc: Exception) -> bool:
     return "429" in message or "quota" in message or "rate limit" in message
 
 
-def _image_to_data_url(image: Image.Image) -> str:
-    buffer = io.BytesIO()
-    image.save(buffer, format="JPEG", quality=85)
-    encoded = base64.b64encode(buffer.getvalue()).decode("utf-8")
-    return f"data:image/jpeg;base64,{encoded}"
+def _guess_mime_type(image_bytes: bytes) -> str:
+    if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if image_bytes.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if image_bytes[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    if image_bytes.startswith(b"RIFF") and image_bytes[8:12] == b"WEBP":
+        return "image/webp"
+    return "image/png"
+
+
+def _bytes_to_data_url(image_bytes: bytes) -> str:
+    mime = _guess_mime_type(image_bytes)
+    encoded = base64.b64encode(image_bytes).decode("utf-8")
+    return f"data:{mime};base64,{encoded}"
 
 
 def _generate_text(
     client: OpenAI,
     *,
     prompt: str,
-    image: Image.Image | None = None,
+    image_bytes: bytes | None = None,
     image_detail: str = DEFAULT_IMAGE_DETAIL,
 ) -> str:
-    if image is not None:
+    if image_bytes is not None:
         content: list[dict] = [
             {"type": "text", "text": prompt},
             {
                 "type": "image_url",
                 "image_url": {
-                    "url": _image_to_data_url(image),
+                    "url": _bytes_to_data_url(image_bytes),
                     "detail": image_detail,
                 },
             },
@@ -195,74 +186,6 @@ def _generate_text(
     raise VisionAnalyzerError(f"GPT API 호출 실패: {last_error}") from last_error
 
 
-def _analyze_single_image(
-    client: OpenAI,
-    image: Image.Image,
-    *,
-    title: str,
-    period: str,
-    image_detail: str,
-) -> str:
-    prompt = ANALYSIS_PROMPT.format(title=title or "썬데이 메이플", period=period or "미상")
-    return _generate_text(client, prompt=prompt, image=image, image_detail=image_detail)
-
-
-def _analyze_chunks(
-    client: OpenAI,
-    chunks: list[Image.Image],
-    *,
-    title: str,
-    period: str,
-    image_detail: str,
-) -> str:
-    partial_results: list[str] = []
-    total = len(chunks)
-
-    for index, chunk in enumerate(chunks, start=1):
-        prompt = CHUNK_PROMPT.format(
-            chunk_index=index,
-            chunk_total=total,
-            title=title or "썬데이 메이플",
-            period=period or "미상",
-        )
-        text = _generate_text(client, prompt=prompt, image=chunk, image_detail=image_detail)
-        partial_results.append(f"[구간 {index}/{total}]\n{text}")
-        logger.info("구간 %d/%d 분석 완료", index, total)
-
-    combined = "\n\n".join(partial_results)
-    if total == 1:
-        return partial_results[0].split("\n", 1)[-1].strip()
-
-    return _generate_text(client, prompt=MERGE_PROMPT.format(combined=combined))
-
-
-def _run_analysis(
-    client: OpenAI,
-    image_bytes: bytes,
-    *,
-    title: str,
-    period: str,
-    max_side: int,
-    image_detail: str,
-) -> str:
-    chunks, _ = prepare_event_image(image_bytes, max_side=max_side)
-    if len(chunks) == 1:
-        return _analyze_single_image(
-            client,
-            chunks[0],
-            title=title,
-            period=period,
-            image_detail=image_detail,
-        )
-    return _analyze_chunks(
-        client,
-        chunks,
-        title=title,
-        period=period,
-        image_detail=image_detail,
-    )
-
-
 def analyze_event_image(
     image_bytes: bytes,
     *,
@@ -270,33 +193,14 @@ def analyze_event_image(
     period: str,
 ) -> str:
     client = _get_client()
-    max_side = int(os.getenv("OPENAI_MAX_IMAGE_SIDE", str(MAX_IMAGE_SIDE)))
     image_detail = os.getenv("OPENAI_IMAGE_DETAIL", DEFAULT_IMAGE_DETAIL)
+    prompt = ANALYSIS_PROMPT.format(title=title or "썬데이 메이플", period=period or "미상")
 
-    try:
-        text = _run_analysis(
-            client,
-            image_bytes,
-            title=title,
-            period=period,
-            max_side=max_side,
-            image_detail=image_detail,
-        )
-        logger.info("GPT 이미지 분석 완료 (글자 수: %d)", len(text))
-        return text
-    except VisionAnalyzerError as exc:
-        if not _is_rate_limit_error(exc) or max_side <= FALLBACK_MAX_SIDE:
-            raise
-
-        logger.warning(
-            "rate limit 지속 — 이미지를 더 축소해 재시도합니다 (max_side=%d).",
-            FALLBACK_MAX_SIDE,
-        )
-        return _run_analysis(
-            client,
-            image_bytes,
-            title=title,
-            period=period,
-            max_side=FALLBACK_MAX_SIDE,
-            image_detail=FALLBACK_IMAGE_DETAIL,
-        )
+    text = _generate_text(
+        client,
+        prompt=prompt,
+        image_bytes=image_bytes,
+        image_detail=image_detail,
+    )
+    logger.info("GPT 이미지 분석 완료 (글자 수: %d)", len(text))
+    return text

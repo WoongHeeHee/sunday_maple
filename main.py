@@ -9,7 +9,6 @@ from datetime import datetime, timezone
 
 from src.discord_notifier import DiscordNotifierError, send_success_embed
 from src.gpt_analyzer import VisionAnalyzerError, analyze_event_image
-from src.image_preprocess import prepare_discord_attachments
 from src.scraper import ScraperError, create_session, download_image, fetch_sunday_maple_event
 from src.state import (
     DEFAULT_STATE_PATH,
@@ -31,6 +30,20 @@ logger = logging.getLogger("sunday_maple_alarm")
 
 def _is_force_notify() -> bool:
     return os.getenv("FORCE_NOTIFY", "").lower() in ("1", "true", "yes")
+
+
+def _image_attachment(image_bytes: bytes) -> tuple[str, bytes]:
+    if image_bytes.startswith(b"\xff\xd8\xff"):
+        filename = "sunday_maple_event.jpg"
+    elif image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+        filename = "sunday_maple_event.png"
+    elif image_bytes[:6] in (b"GIF87a", b"GIF89a"):
+        filename = "sunday_maple_event.gif"
+    elif image_bytes.startswith(b"RIFF") and image_bytes[8:12] == b"WEBP":
+        filename = "sunday_maple_event.webp"
+    else:
+        filename = "sunday_maple_event.png"
+    return filename, image_bytes
 
 
 def main() -> int:
@@ -86,7 +99,6 @@ def main() -> int:
 
     try:
         image_bytes = download_image(session, event.image_url)
-        image_attachments = prepare_discord_attachments(image_bytes)
         raw_text = analyze_event_image(
             image_bytes,
             title=event.title,
@@ -100,7 +112,7 @@ def main() -> int:
             description=description,
             detail_url=event.detail_url,
             image_url=event.image_url,
-            image_attachments=image_attachments,
+            image_attachment=_image_attachment(image_bytes),
         )
     except (ScraperError, DiscordNotifierError, VisionAnalyzerError) as exc:
         logger.error("처리 중 오류: %s", exc)
