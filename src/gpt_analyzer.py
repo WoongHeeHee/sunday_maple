@@ -131,6 +131,26 @@ def _bytes_to_data_url(image_bytes: bytes) -> str:
     return f"data:{mime};base64,{encoded}"
 
 
+def _log_response_metadata(response, *, attempt: int, model: str) -> None:
+    """GPT 응답 메타데이터를 로그에 남깁니다 (빈 응답 원인 진단용)."""
+    choice = response.choices[0] if response.choices else None
+    message = choice.message if choice else None
+    usage = response.usage
+
+    logger.warning(
+        "GPT 응답 메타데이터 (시도 %d/%d, model=%s): finish_reason=%s, "
+        "prompt_tokens=%s, completion_tokens=%s, total_tokens=%s, refusal=%r",
+        attempt,
+        MAX_RETRIES,
+        model,
+        getattr(choice, "finish_reason", None),
+        getattr(usage, "prompt_tokens", None) if usage else None,
+        getattr(usage, "completion_tokens", None) if usage else None,
+        getattr(usage, "total_tokens", None) if usage else None,
+        getattr(message, "refusal", None) if message else None,
+    )
+
+
 def _generate_text(
     client: OpenAI,
     *,
@@ -153,6 +173,7 @@ def _generate_text(
         content = [{"type": "text", "text": prompt}]
 
     last_error: Exception | None = None
+    last_finish_reason: str | None = None
     model = _get_model()
 
     for attempt in range(1, MAX_RETRIES + 1):
@@ -162,9 +183,24 @@ def _generate_text(
                 messages=[{"role": "user", "content": content}],
                 max_completion_tokens=4096,
             )
-            text = (response.choices[0].message.content or "").strip()
+            choice = response.choices[0]
+            text = (choice.message.content or "").strip()
             if not text:
-                raise VisionAnalyzerError("GPT가 빈 응답을 반환했습니다.")
+                last_finish_reason = choice.finish_reason
+                _log_response_metadata(response, attempt=attempt, model=model)
+                if attempt < MAX_RETRIES:
+                    delay = RETRY_BASE_DELAY * attempt
+                    logger.warning(
+                        "GPT 빈 응답 (시도 %d/%d), %ss 후 재시도",
+                        attempt,
+                        MAX_RETRIES,
+                        delay,
+                    )
+                    time.sleep(delay)
+                    continue
+                raise VisionAnalyzerError(
+                    f"GPT가 빈 응답을 반환했습니다. (finish_reason={last_finish_reason})"
+                )
             return text
         except VisionAnalyzerError:
             raise
