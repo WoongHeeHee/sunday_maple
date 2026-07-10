@@ -1,0 +1,40 @@
+name: Sunday Maple Scheduler
+
+on:
+  schedule:
+    # 금요일 10:06 / 10:16 / 10:26 KST (= UTC 01:06 / 01:16 / 01:26)
+    - cron: "6 1 * * 5"
+    - cron: "16 1 * * 5"
+    - cron: "26 1 * * 5"
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Log trigger
+        run: |
+          echo "event=${{ github.event_name }}"
+          echo "schedule=${{ github.event.schedule }}"
+          date -u +"%Y-%m-%d %H:%M:%S UTC"
+          TZ=Asia/Seoul date +"%Y-%m-%d %H:%M:%S KST"
+
+      - name: Dispatch Sunday Maple workflow
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: "sunday_maple.yml",
+              ref: "main",
+              inputs: {
+                force_run: "false",
+              },
+            });
+            core.info("Dispatched sunday_maple.yml");

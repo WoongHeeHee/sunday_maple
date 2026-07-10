@@ -8,16 +8,11 @@ on:
         required: false
         default: false
         type: boolean
-  schedule:
-    # 매주 금요일 10:05 / 10:15 / 10:25 KST (공지 지연 대비 3회)
-    - cron: "5 10 * * 5"
-      timezone: Asia/Seoul
-    - cron: "15 10 * * 5"
-      timezone: Asia/Seoul
-    - cron: "25 10 * * 5"
-      timezone: Asia/Seoul
+  repository_dispatch:
+    types: [sunday-maple-run]
 
 permissions:
+  actions: write
   contents: read
 
 concurrency:
@@ -60,7 +55,8 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           JINA_API_KEY: ${{ secrets.JINA_API_KEY }}
-          FORCE_NOTIFY: ${{ github.event.inputs.force_run || 'false' }}
+          FORCE_NOTIFY: ${{ github.event.inputs.force_run || github.event.client_payload.force_run || 'false' }}
+          GITHUB_ACTIONS: "true"
         run: python main.py
 
       - name: Save notification state

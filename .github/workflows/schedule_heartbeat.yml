@@ -1,0 +1,20 @@
+name: Schedule Heartbeat
+
+on:
+  schedule:
+    # 매일 09:07 KST - GitHub schedule 등록 여부 진단용
+    - cron: "7 0 * * *"
+  workflow_dispatch:
+
+jobs:
+  heartbeat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Log heartbeat
+        run: |
+          echo "GitHub schedule is working."
+          echo "event=${{ github.event_name }}"
+          echo "schedule=${{ github.event.schedule }}"
+          date -u +"%Y-%m-%d %H:%M:%S UTC"
+          TZ=Asia/Seoul date +"%Y-%m-%d %H:%M:%S KST"

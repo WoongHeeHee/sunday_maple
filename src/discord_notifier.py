@@ -86,8 +86,7 @@ def send_success_embed(
         # embed.image에 넣지 않고 파일만 첨부하면 Discord가 갤러리 형태로 묶어 표시함
         if image_url:
             main_embed["description"] = (
-                f"{description[:4000]}\n\n"
-                f"🔗 [원본 이미지 보기]({image_url})"
+                f"{description[:4000]}"
             )[:4096]
 
         if len(image_attachments) > MAX_ATTACHMENTS:

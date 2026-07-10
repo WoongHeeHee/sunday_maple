@@ -128,8 +128,26 @@ def _fetch_via_jina(session: requests.Session, url: str) -> str:
     return response.text
 
 
+def _running_on_github_actions() -> bool:
+    return os.getenv("GITHUB_ACTIONS", "").lower() == "true"
+
+
 def fetch_page(session: requests.Session, url: str) -> tuple[str, str]:
     """페이지 본문과 소스 유형(html|jina)을 반환합니다."""
+    if _running_on_github_actions():
+        logger.info("GitHub Actions 환경 — Jina 프록시를 우선 사용합니다: %s", url)
+        try:
+            return _fetch_via_jina(session, url), "jina"
+        except ScraperError as jina_exc:
+            logger.warning("Jina 프록시 실패, 직접 접속으로 전환합니다: %s", url)
+            try:
+                return _fetch_direct(session, url), "html"
+            except ScraperError as direct_exc:
+                raise ScraperError(
+                    f"Jina 프록시 및 넥슨 직접 접속 모두 실패: {url}. "
+                    "JINA_API_KEY Secret 등록 여부를 확인해 주세요."
+                ) from direct_exc
+
     try:
         return _fetch_direct(session, url), "html"
     except ScraperError as exc:
