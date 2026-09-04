@@ -1,343 +1,165 @@
-# 썬데이 메이플 알림 봇 (Sunday Maple Alarm)
+# 썬데이 메이플 알림 봇
 
-메이플스토리 공식 이벤트 페이지에서 **썬데이 메이플** 공지를 자동 수집하고, 이미지 OCR로 혜택 텍스트를 추출한 뒤 **Discord Webhook**으로 알림을 보내는 **GitHub Actions** 기반 서버리스 자동화 봇입니다. 매주 **금요일 10:05 (KST)**에 1회 실행됩니다.
-
-> **현재 단계:** 기획안 (코드 미작성)  
-> 아래 내용을 검토·승인해 주시면 `main.py`, `requirements.txt`, GitHub Actions 워크플로우를 구현합니다.
+메이플스토리 공식 이벤트 페이지에서 **썬데이 메이플** 공지를 찾아, 본문 이미지를 GPT Vision으로 요약한 뒤 Discord로 보내는 GitHub Actions 봇입니다. 친구들과 쓰는 채널에서 매주 금요일에 자동으로 돌아갑니다.
 
 ---
 
-## 1. 프로젝트 개요
+## 배경
 
-| 항목 | 내용 |
+썬데이 메이플 혜택은 HTML 본문이 아니라 **디자인된 공지 이미지**로만 올라옵니다. 이미지 안에는 글자뿐 아니라 파티클·장식 요소가 많아서, 매주 사람이 페이지를 열고 내용을 옮겨 적는 일이 반복됩니다.
+
+이 저장소는 그 확인 작업을 자동화합니다.
+
+---
+
+## 접근
+
+1. 넥슨 이벤트 목록에서 제목에 `썬데이 메이플`이 들어간 게시글을 찾습니다.
+2. 상세 페이지의 본문 이미지(`lwi.nexon.com` `_board/` 경로)를 받습니다.
+3. GPT Vision이 혜택을 Discord용 헤더/불릿 형식으로 정리합니다.
+4. Embed와 원본 이미지를 Webhook으로 보냅니다.
+
+처음에는 Tesseract OCR을 썼습니다. 장식과 글자를 구분하지 못해 Gemini Vision으로 바꿨고, Gemini는 이미지는 읽지만 출력 양식을 잘 지키지 못해 GPT와 예시 프롬프트로 다시 바꿨습니다.
+
+---
+
+## 동작 흐름
+
+```text
+금요일 10:06 / 10:16 / 10:26 KST
+        │
+        ▼
+schedule_trigger.yml
+        │  workflow_dispatch
+        ▼
+sunday_maple.yml  (Python 3.11)
+        │
+        ├─ 이번 주 같은 event_id면 종료
+        ├─ 이벤트 목록 수집
+        ├─ 본문 이미지 다운로드
+        ├─ GPT Vision 요약
+        └─ Discord Embed + 원본 이미지
+```
+
+스케줄은 `schedule_trigger.yml`에 있고, 실제 봇은 `sunday_maple.yml`이 실행합니다. GitHub Actions cron이 본 워크플로우에서 빠지던 문제에 대한 우회입니다. 공지가 아직 없으면 Discord에 아무것도 보내지 않고 끝냅니다. 같은 주·같은 이벤트는 `data/state.json`과 Actions cache로 한 번만 보냅니다.
+
+---
+
+## 구현 요지
+
+| 모듈 | 역할 |
 |------|------|
-| 목적 | 매주 금요일 10시 전후에 올라오는 썬데이 메이플 혜택을 Discord로 자동 알림 |
-| 실행 환경 | GitHub Actions (`ubuntu-latest`) — **무료 티어** |
-| 실행 주기 | 매주 금요일 **10:05 KST** (공지 10:00 + 5분 버퍼) |
-| 비용 | GitHub Actions 무료 할당량 + Tesseract OCR 기준 **$0** |
+| `main.py` | 환경변수 검사, 중복 방지, 파이프라인 연결 |
+| `src/scraper.py` | 목록/상세 페이지 파싱, 이미지 다운로드 |
+| `src/gpt_analyzer.py` | 원본 이미지를 GPT Vision에 전달해 요약 |
+| `src/summarizer.py` | 공백 정리, Discord 길이 제한 |
+| `src/discord_notifier.py` | Webhook Embed + 파일 첨부 |
+| `src/state.py` | KST ISO week + `event_id` 기준 멱등성 |
 
-### 처리 흐름
+수집 대상:
 
-```mermaid
-flowchart LR
-    A[GitHub Actions Cron] --> B[이벤트 목록 스크래핑]
-    B --> C{썬데이 메이플<br/>게시글 존재?}
-    C -->|No| D[경고 알림 또는 종료]
-    C -->|Yes| E[상세 페이지 접속]
-    E --> F[메인 이미지 URL 추출]
-    F --> G[이미지 다운로드]
-    G --> H[OCR 텍스트 추출]
-    H --> I[요약 및 Discord Embed 전송]
-```
+- 목록: `https://maplestory.nexon.com/News/Event`
+- 상세: `https://maplestory.nexon.com/News/Event/Ongoing/{event_id}`
+- 본문 이미지: `lwi.nexon.com` 경로. 목록 썸네일과 다릅니다.
+
+GPT 기본값은 `gpt-5.5`, 이미지 detail은 `low`입니다. `OPENAI_MODEL`, `OPENAI_IMAGE_DETAIL`로 덮을 수 있습니다.
 
 ---
 
-## 2. 대상 사이트 분석 (사전 조사 결과)
+## 기술 선택
 
-실제 HTML 구조를 확인한 결과, 아래와 같이 동작합니다.
+**이미지 이해: OCR → Gemini → GPT**
 
-### 2.1 이벤트 목록 페이지
+혜택이 이미지로만 제공되고, 파티클 같은 장식이 많습니다. OCR은 글자와 장식을 구분하지 못했습니다. Gemini는 분석은 되었지만 Discord에 올릴 양식을 지키지 못해, 출력 예시를 넣은 GPT Vision으로 고정했습니다.
 
-- **URL:** `https://maplestory.nexon.com/News/Event`
-- **구조:** `<ul class="event_all_banner">` 안의 `<li>` 카드 목록
-- **카드 예시:**
+**실행 환경: GitHub Actions**
 
-```html
-<li>
-  <a href="/News/Event/1352">
-    <img src="https://file.nexon.com/NxFile/download/FileDownloader.aspx?oidFile=..." alt="" />
-  </a>
-  <dl>
-    <dt><a href="/News/Event/1352">스페셜 썬데이 메이플</a></dt>
-    <dd><a href="/News/Event/1352">2026.06.28 (일) ~ ...</a></dd>
-  </dl>
-</li>
-```
+상시 서버 없이 금요일에만 돌립니다. 스케줄 미동작이 있어 cron을 별도 워크플로우로 분리했습니다.
 
-- **필터 조건:** 제목(`<dt>`)에 `썬데이 메이플` 또는 `스페셜 썬데이 메이플` 포함
-- **이벤트 ID 추출:** `href`에서 숫자 추출 (예: `/News/Event/1352` → `1352`)
-- **최신 게시글:** 목록 상단부터 순회하며 **첫 번째 매칭** 항목 사용
+**알림: Discord Webhook**
 
-### 2.2 이벤트 상세 페이지
+수신만 하면 되므로 Bot Token이나 슬래시 커맨드는 쓰지 않습니다.
 
-- **URL:** `https://maplestory.nexon.com/News/Event/Ongoing/{이벤트번호}`
-- **혜택 이미지 위치:** `.qs_text .new_board_con` 내부
+**넥슨 페이지 접근**
 
-```html
-<div class="qs_text">
-  <div class="new_board_con">
-    <img src="https://lwi.nexon.com/maplestory/2026/0628_board/90C7C1D510BDA5B8.png" ... />
-  </div>
-</div>
-```
+GitHub Actions에서 페이지가 막힐 때를 대비해 Jina Reader(`r.jina.ai`)를 폴백으로 두었습니다. `JINA_API_KEY`는 선택입니다.
 
-- **중요:** 목록 썸네일(`file.nexon.com/...FileDownloader`)과 **상세 본문 이미지(`lwi.nexon.com`)가 다릅니다.** OCR 대상은 **상세 페이지 본문 이미지**입니다.
-- **부가 정보:** `.qs_title span` (제목), `.event_date` (기간)도 Embed에 활용
+**이미지 전처리**
+
+한동안 리사이즈·분할 후 분석했으나, 현재는 원본을 GPT와 Discord 양쪽에 그대로 보냅니다.
 
 ---
 
-## 3. 프로젝트 폴더 구조 (예정)
+## 결과
 
-```
-sunday_maple_alarm/
-├── README.md
-├── requirements.txt
-├── main.py
-├── src/
-│   ├── __init__.py
-│   ├── scraper.py            # 목록/상세 페이지 스크래핑
-│   ├── ocr.py                # 이미지 OCR 처리
-│   ├── summarizer.py         # OCR 결과 정리·요약
-│   └── discord_notifier.py   # Discord Webhook Embed 전송
-├── .github/
-│   └── workflows/
-│       └── sunday_maple.yml
-└── .gitignore
-```
+친구들과 쓰는 Discord 채널에서 매주 자동 알림으로 사용 중입니다. 요약은 `low` detail로도 읽기 충분한 품질이었습니다.
 
-모듈을 나누되, 각 파일은 단일 책임만 갖도록 **최소한의 구조**로 유지합니다.
+실제 알림 예시:
+
+![Discord 알림 예시](docs/discord-notification.png)
+
+원본 공지 이미지와, GPT가 정리한 Embed가 함께 도착합니다.
 
 ---
 
-## 4. 기술 스택 및 Python 라이브러리
+## 기여
 
-| 용도 | 라이브러리 | 비고 |
-|------|-----------|------|
-| HTTP 요청 | `requests` | User-Agent 헤더 포함 |
-| HTML 파싱 | `beautifulsoup4` + `lxml` | CSS 선택자 기반 추출 |
-| OCR (1차) | `pytesseract` + `tesseract-ocr-kor` | **무료, API 키 불필요** |
-| OCR (2차, 선택) | OCR.space API | Tesseract 품질 부족 시 폴백 |
-| 이미지 처리 | `Pillow` | OCR 전 리사이즈·전처리 |
-| Discord 전송 | `requests` (Webhook POST) | Embed JSON 직접 구성 |
-
-### requirements.txt (예정)
-
-```
-requests>=2.31.0
-beautifulsoup4>=4.12.0
-lxml>=5.0.0
-Pillow>=10.0.0
-pytesseract>=0.3.10
-```
-
-> `discord-webhook` 등 별도 SDK는 사용하지 않습니다. Webhook POST는 `requests` 한 번으로 충분합니다.
+이 저장소는 개인 프로젝트입니다. 기획과 디버깅은 작성자가 진행했고, 구현 코딩은 Cursor Agent가 작성했습니다.
 
 ---
 
-## 5. OCR 해결 방안 (핵심)
+## 한계
 
-썬데이 메이플 혜택은 **디자인된 PNG 이미지**로 제공되므로 OCR 품질이 알림 품질을 좌우합니다.
+- 넥슨 페이지 HTML(또는 Jina 텍스트) 구조에 결합되어 있습니다. 마크업이 바뀌면 파서가 깨질 수 있습니다.
+- 목록에서 키워드가 맞는 **첫 게시글만** 처리합니다.
+- GPT 요약이 이미지와 다를 수 있습니다. 별도 검증은 없습니다.
+- 중복 방지 상태 파일은 Actions cache에 의존합니다. cache가 사라지면 같은 주를 다시 보낼 수 있습니다.
+- 스크래핑·GPT·Discord 실패 시 Discord로 오류 알림을 보내지 않고 Actions를 실패시킵니다.
+- 테스트 코드는 없습니다.
 
-### 5.1 권장: Tesseract OCR (Primary) — 100% 무료
+---
 
-| 항목 | 내용 |
+## 기술 스택
+
+| 기술 | 역할 |
 |------|------|
-| 장점 | API 키 불필요, GitHub Actions에서 apt로 설치 가능, 호출 제한 없음 |
-| 단점 | 한글·게임 UI 폰트 인식률이 API 대비 다소 낮을 수 있음 |
-| GitHub Actions 설치 | `sudo apt-get install -y tesseract-ocr tesseract-ocr-kor` |
-| 언어 | `kor` (+ 필요 시 `kor+eng`) |
-| 전처리 | 그레이스케일, 대비 향상, 필요 시 2배 업스케일 |
-
-### 5.2 보조: OCR.space API (Fallback, 선택)
-
-| 항목 | 내용 |
-|------|------|
-| 무료 한도 | IP당 **500회/일**, 파일 **1MB** 이하 |
-| 용도 | Tesseract 결과가 빈 문자열이거나 글자 수가 극히 적을 때 1회 재시도 |
-| API Key | [ocr.space/ocrapi](https://ocr.space/ocrapi) 무료 등록 |
-| Secret | `OCR_SPACE_API_KEY` (선택 등록) |
-
-### 5.3 OCR 결과 후처리 (`summarizer.py`)
-
-1. 연속 공백·빈 줄 정리
-2. Discord Embed `description` 필드 **4096자** 제한 준수 (초과 시 truncate)
-3. 핵심 혜택을 bullet list 형태로 재구성 (가능한 경우)
-4. OCR 실패 시에도 **이미지 원본 URL + 이벤트 페이지 링크**는 반드시 전송
+| Python 3.11 | 런타임 |
+| requests, BeautifulSoup, lxml | 페이지 수집·파싱 |
+| OpenAI Chat Completions (Vision) | 이미지 요약 |
+| Discord Incoming Webhook | 알림 전송 |
+| GitHub Actions | 스케줄과 실행 |
+| Jina Reader | 넥슨 페이지 차단 대비 폴백 |
 
 ---
 
-## 6. Discord 알림 설계
+## 실행 방법
 
-### 6.1 성공 Embed (예시)
+저장소 Secrets:
 
-| 필드 | 내용 |
-|------|------|
-| `title` | `🍁 스페셜 썬데이 메이플 — {이벤트 기간}` |
-| `description` | OCR 추출·요약된 혜택 텍스트 |
-| `url` | `https://maplestory.nexon.com/News/Event/Ongoing/{id}` |
-| `color` | `0xFF6B35` (메이플 오렌지 톤) |
-| `image.url` | `lwi.nexon.com` 본문 이미지 URL |
-| `footer.text` | `Sunday Maple Alarm Bot` |
-| `timestamp` | ISO 8601 (실행 시각) |
+| 이름 | 필수 | 설명 |
+|------|------|------|
+| `DISCORD_WEBHOOK_URL` | 예 | Discord 채널 Webhook |
+| `OPENAI_API_KEY` | 예 | GPT Vision |
+| `JINA_API_KEY` | 아니오 | Jina 폴백용 |
 
-### 6.2 오류·예외 Embed
+GitHub Actions에서 `Sunday Maple Alarm` 워크플로우를 수동 실행할 수 있습니다. `force_run`을 켜면 이번 주 중복 방지를 건너뜁니다.
 
-| 상황 | Discord 동작 |
-|------|----------------|
-| 썬데이 메이플 게시글 없음 | ⚠️ 경고 Embed (「아직 공지 미등록」) |
-| 네트워크/파싱 실패 | 오류 Embed + Actions 로그 |
-| OCR 실패 | 이미지 URL·상세 링크만 포함한 Embed |
-| Discord 전송 실패 | `sys.exit(1)` → Actions 실패 표시 |
+로컬에서는 `.env`를 자동으로 읽지 않습니다. 환경변수를 설정한 뒤 실행합니다.
 
----
-
-## 7. GitHub Actions 설계
-
-### 7.1 Cron 스케줄 (KST ↔ UTC)
-
-| 항목 | 값 |
-|------|-----|
-| 목표 실행 시각 | **금요일 10:05 KST** |
-| UTC 변환 | KST − 9h → **금요일 01:05 UTC** |
-| Cron 표현식 | `5 1 * * 5` |
-
-> GitHub Actions cron은 **UTC** 기준입니다.  
-> `5 1 * * 5` = 매주 금요일 01:05 UTC = **10:05 KST**
-
-### 7.2 워크플로우 개요 (`sunday_maple.yml`)
-
-```yaml
-name: Sunday Maple Alarm
-
-on:
-  schedule:
-    - cron: '5 1 * * 5'   # 금 10:05 KST
-  workflow_dispatch:       # 수동 실행 (테스트용)
-
-jobs:
-  notify:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - name: Install Tesseract (Korean)
-        run: sudo apt-get update && sudo apt-get install -y tesseract-ocr tesseract-ocr-kor
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-      - name: Run bot
-        env:
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          OCR_SPACE_API_KEY: ${{ secrets.OCR_SPACE_API_KEY }}
-        run: python main.py
+```bash
+pip install -r requirements.txt
+export DISCORD_WEBHOOK_URL="..."
+export OPENAI_API_KEY="..."
+python main.py
 ```
 
-### 7.3 무료 한도
+Windows PowerShell:
 
-- Public/Private repo Free 플랜: Actions **2,000분/월** — 주 1회·수 분 이내 실행이면 충분
-
----
-
-## 8. GitHub Secrets
-
-Repository → **Settings → Secrets and variables → Actions** 에 등록:
-
-| Secret 이름 | 필수 | 설명 |
-|-------------|------|------|
-| `DISCORD_WEBHOOK_URL` | ✅ | Discord 채널 Webhook URL |
-| `OCR_SPACE_API_KEY` | ⬜ | OCR.space 폴백 사용 시 (미등록 시 Tesseract만 사용) |
-
-### Discord Webhook 생성 방법
-
-1. Discord 서버 → 채널 설정 → **연동 → Webhook**
-2. 「Webhook 만들기」→ URL 복사
-3. GitHub Secret `DISCORD_WEBHOOK_URL`에 저장
-
----
-
-## 9. 모듈별 책임 (구현 예정)
-
-### `scraper.py`
-
-- `fetch_event_list()` → HTML GET
-- `find_latest_sunday_maple(soup)` → 키워드 매칭, event_id·title·period 반환
-- `fetch_event_detail(event_id)` → 상세 페이지 GET
-- `extract_main_image_url(soup)` → `.new_board_con img[src*="lwi.nexon.com"]`
-- `download_image(url)` → `bytes` 반환
-
-**키워드:** `썬데이 메이플`, `스페셜 썬데이 메이플` (부분 일치)
-
-### `ocr.py`
-
-- `extract_text_tesseract(image_bytes)`
-- `extract_text_ocr_space(image_bytes)` (API 키 있을 때)
-- `extract_text(image_bytes)` → Tesseract → 실패 시 OCR.space
-
-### `summarizer.py`
-
-- `format_for_discord(raw_text, max_length=3500)`
-
-### `discord_notifier.py`
-
-- `send_success_embed(...)`
-- `send_error_embed(message)`
-
-### `main.py` 실행 순서
-
-```
-1. 목록 스크래핑
-2. 썬데이 메이플 게시글 탐색 (없으면 경고 후 종료)
-3. 상세 페이지 + 이미지 URL 추출
-4. 이미지 다운로드
-5. OCR + 요약
-6. Discord Embed 전송
+```powershell
+pip install -r requirements.txt
+$env:DISCORD_WEBHOOK_URL = "..."
+$env:OPENAI_API_KEY = "..."
+python main.py
 ```
 
----
-
-## 10. 오류 처리 및 견고성
-
-| 시나리오 | 처리 |
-|----------|------|
-| HTTP 4xx/5xx | `requests` + **최대 3회** exponential backoff 재시도 |
-| 목록에 키워드 없음 | Discord 경고 Embed, exit code `0` (일시적 지연 가능) |
-| 상세 이미지 selector 변경 | 로그 기록 후 오류 Embed |
-| OCR 빈 결과 | 이미지·링크만 포함한 Embed |
-| Discord 429 | 2초 대기 후 1회 재시도 |
-| 타임아웃 | HTTP **30초** |
-
-### 공지 지연 대비 (선택)
-
-10:05 1회 실행으로 대부분 충분합니다. 지연이 잦다면 워크플로우에 **10:05 / 10:15 / 10:25** 3회 cron 추가도 가능합니다.
-
----
-
-## 11. 보안·운영
-
-- Webhook URL·API Key는 **코드·로그에 출력하지 않음**
-- `.gitignore`: `__pycache__/`, `.env`, `*.pyc`, `.venv/`
-- User-Agent: 일반 브라우저 문자열 사용 (차단 완화)
-- 넥슨 페이지 **robots.txt·이용약관** 준수, **주 1회·비영리 개인 알림** 수준 유지
-
----
-
-## 12. 구현 후 테스트 방법
-
-1. GitHub에 repo push
-2. Secret `DISCORD_WEBHOOK_URL` 등록
-3. Actions → **Run workflow** (`workflow_dispatch`)
-4. Discord Embed 수신 확인
-5. 금요일 10:05 KST cron 자동 실행 확인
-
----
-
-## 13. 승인 후 진행 작업
-
-아래 항목을 **승인해 주시면** 바로 구현합니다.
-
-- [ ] `requirements.txt`
-- [ ] `src/scraper.py`, `src/ocr.py`, `src/summarizer.py`, `src/discord_notifier.py`
-- [ ] `main.py`
-- [ ] `.github/workflows/sunday_maple.yml`
-- [ ] `.gitignore`
-
-### 확인 부탁드리는 사항
-
-1. **OCR 방식:** Tesseract 단독 vs Tesseract + OCR.space 폴백 — **폴백 포함을 권장**합니다.
-2. **공지 미등록 시:** Discord 경고 알림을 보낼지, 조용히 종료할지
-3. **Discord 채널:** Webhook만 사용 (봇 토큰·슬래시 커맨드 불필요) — 이대로 진행해도 될지
-
----
-
-**승인 또는 수정 의견을 주시면, 위 구조대로 코드 작성을 시작하겠습니다.**
+테스트로 다시 보내려면 `FORCE_NOTIFY=true`를 넣습니다.
